@@ -604,9 +604,6 @@ def main():
             else:
                 st.warning("Please enter your OpenAI API key in the sidebar to enable AI insights.")
         
-        with tab4:
-            # [Your existing detailed analysis code]
-            pass
 
 if __name__ == "__main__":
     main()
