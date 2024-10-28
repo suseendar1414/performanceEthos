@@ -9,138 +9,118 @@ from openai import OpenAI
 import time
 
 
-def calculate_detailed_kpi_scores(data):
+def calculate_detailed_kpi_scores(data, start_date=None, end_date=None):
     """
-    Calculate individual scores for each KPI metric with fixed scoring logic
+    Calculate KPI scores based on actual loan performance data with optional date filtering
     """
+    # Convert timestamp columns to datetime and ensure timezone consistency
+    data['CLOSEDATE'] = pd.to_datetime(data['CLOSEDATE']).dt.tz_localize(None)
+    data['CREATEDDATE'] = pd.to_datetime(data['CREATEDDATE']).dt.tz_localize(None)
+    
+    # Apply date filtering if specified
+    if start_date and end_date:
+        start_date = pd.to_datetime(start_date).tz_localize(None)
+        end_date = pd.to_datetime(end_date).tz_localize(None)
+        data = data[
+            (data['CREATEDDATE'] >= start_date) & 
+            (data['CREATEDDATE'] <= end_date)
+        ]
+    
+    # Filter active loans
+    active_loans = data[data['CLOSEDATE'].dt.year != 2099].copy()
+    
+    # Calculate time period
+    if len(active_loans) > 0:
+        date_range = (active_loans['CLOSEDATE'].max() - active_loans['CLOSEDATE'].min()).days / 365.25
+        time_factor = max(date_range, 1/12)  # Minimum 1 month
+    else:
+        time_factor = 1
+    
+    # Calculate base metrics
+    closed_loans = len(active_loans[active_loans['ISCLOSED'] == True])
+    won_loans = len(active_loans[(active_loans['ISCLOSED'] == True) & (active_loans['ISWON'] == True)])
+    valid_revenue_loans = active_loans[active_loans['LOANTOTALREVENUE__C'] > 0]
+    total_revenue = valid_revenue_loans['LOANTOTALREVENUE__C'].sum()
+    
+    # Annualize metrics
+    annualized_loans = closed_loans / time_factor
+    annualized_revenue = total_revenue / time_factor
+    
     kpi_scores = {}
     
-    # 1. Total Number of Loans Closed (Weight: 9)
-    closed_loans = data['ISCLOSED'].sum()
-    # Set benchmark targets
-    target_loans = 1000  # Example target
-    max_loans = 2000     # Example maximum
-    
-    # Calculate achievement score using a logarithmic scale
-    achievement_score = min(100, (closed_loans / target_loans) * 100)
+    # 1. Total Number of Loans (Weight: 9)
+    benchmark_loans = 50  # Annual benchmark
+    loans_achievement = min(200, (annualized_loans / benchmark_loans) * 100)
     kpi_scores['Total_Loans_Closed'] = {
         'raw_value': closed_loans,
-        'achievement_score': achievement_score,
-        'kpi_score': (achievement_score / 100) * 9,
+        'annualized_value': annualized_loans,
+        'achievement_score': loans_achievement,
+        'kpi_score': (loans_achievement / 100) * 9,
         'weight': 9,
-        'description': 'Total number of loans that have been closed'
+        'description': 'Total number of loans closed',
+        'benchmark': benchmark_loans
     }
     
     # 2. Total Dollar Value (Weight: 10)
-    total_value = data['LOANTOTALREVENUE__C'].sum()
-    # Set revenue targets
-    target_revenue = 10000000  # Example target
-    max_revenue = 20000000     # Example maximum
-    
-    revenue_achievement = min(100, (total_value / target_revenue) * 100)
+    benchmark_revenue = 1500000  # Annual benchmark
+    revenue_achievement = min(200, (annualized_revenue / benchmark_revenue) * 100)
     kpi_scores['Total_Dollar_Value'] = {
-        'raw_value': total_value,
+        'raw_value': total_revenue,
+        'annualized_value': annualized_revenue,
         'achievement_score': revenue_achievement,
         'kpi_score': (revenue_achievement / 100) * 10,
         'weight': 10,
-        'description': 'Total monetary value of all loans'
+        'description': 'Total monetary value of all loans',
+        'benchmark': benchmark_revenue
     }
     
-    # 3. Loan Types (Weight: 6)
-    if 'RECORDTYPEID' in data.columns:
-        loan_types = data['RECORDTYPEID'].nunique()
-        target_types = 5  # Example target
-        
-        type_achievement = min(100, (loan_types / target_types) * 100)
-        kpi_scores['Loan_Types'] = {
-            'raw_value': loan_types,
-            'achievement_score': type_achievement,
-            'kpi_score': (type_achievement / 100) * 6,
-            'weight': 6,
-            'description': 'Diversity of loan types handled'
-        }
-    
-    # 4. Average Loan Size (Weight: 8)
-    avg_loan = data['LOANTOTALREVENUE__C'].mean()
-    target_avg = 100000  # Example target
-    
-    size_achievement = min(100, (avg_loan / target_avg) * 100)
+    # 3. Average Loan Size (Weight: 8)
+    avg_loan = total_revenue / closed_loans if closed_loans > 0 else 0
+    benchmark_avg = 100000  # Benchmark average loan size
+    size_achievement = min(200, (avg_loan / benchmark_avg) * 100)
     kpi_scores['Average_Loan_Size'] = {
         'raw_value': avg_loan,
+        'annualized_value': avg_loan,  # Average doesn't need annualization
         'achievement_score': size_achievement,
         'kpi_score': (size_achievement / 100) * 8,
         'weight': 8,
-        'description': 'Average size of loans processed'
+        'description': 'Average size of loans processed',
+        'benchmark': benchmark_avg
     }
     
-    # 5. Loan Approval Rate (Weight: 7)
-    approval_rate = data['ISWON'].mean() * 100  # Convert to percentage
-    target_approval = 80  # Example target percentage
-    
-    rate_achievement = min(100, (approval_rate / target_approval) * 100)
+    # 4. Loan Approval Rate (Weight: 7)
+    approval_rate = (won_loans / closed_loans * 100) if closed_loans > 0 else 0
+    benchmark_approval = 70  # Benchmark approval rate
+    rate_achievement = min(200, (approval_rate / benchmark_approval) * 100)
     kpi_scores['Loan_Approval_Rate'] = {
         'raw_value': approval_rate,
+        'annualized_value': approval_rate,  # Rate doesn't need annualization
         'achievement_score': rate_achievement,
         'kpi_score': (rate_achievement / 100) * 7,
         'weight': 7,
-        'description': 'Percentage of loans approved'
+        'description': 'Percentage of loans approved',
+        'benchmark': benchmark_approval
     }
     
-    # 6. Time to Close (Weight: 6)
-    if 'CREATEDDATE' in data.columns and 'CLOSEDATE' in data.columns:
-        try:
-            data['CREATEDDATE'] = pd.to_datetime(data['CREATEDDATE']).dt.tz_localize(None)
-            data['CLOSEDATE'] = pd.to_datetime(data['CLOSEDATE']).dt.tz_localize(None)
-            
-            closed_loans = data[data['ISCLOSED'] == True]
-            if len(closed_loans) > 0:
-                avg_days = (closed_loans['CLOSEDATE'] - closed_loans['CREATEDDATE']).dt.days.mean()
-                target_days = 30  # Example target
-                max_days = 90     # Example maximum
-                
-                # Inverse calculation as lower days is better
-                time_achievement = max(0, min(100, ((max_days - avg_days) / (max_days - target_days)) * 100))
-            else:
-                avg_days = 0
-                time_achievement = 0
-            
-            kpi_scores['Time_to_Close'] = {
-                'raw_value': avg_days,
-                'achievement_score': time_achievement,
-                'kpi_score': (time_achievement / 100) * 6,
-                'weight': 6,
-                'description': 'Average time taken to close loans'
-            }
-        except Exception as e:
-            st.warning(f"Error calculating Time to Close: {str(e)}")
+    # 5. Time to Close (Weight: 6)
+    # Calculate days to close for valid date ranges
+    active_loans['days_to_close'] = (active_loans['CLOSEDATE'] - active_loans['CREATEDDATE']).dt.days
+    valid_closing_times = active_loans[active_loans['days_to_close'] > 0]['days_to_close']
+    avg_days = valid_closing_times.mean() if not valid_closing_times.empty else 0
     
-    # 7. Conversion Rate (Weight: 6)
-    conversion_rate = (data['ISCLOSED'] & data['ISWON']).mean() * 100  # Convert to percentage
-    target_conversion = 70  # Example target percentage
-    
-    conv_achievement = min(100, (conversion_rate / target_conversion) * 100)
-    kpi_scores['Conversion_Rate'] = {
-        'raw_value': conversion_rate,
-        'achievement_score': conv_achievement,
-        'kpi_score': (conv_achievement / 100) * 6,
+    benchmark_days = 45  # Benchmark processing time
+    time_achievement = min(200, max(0, ((benchmark_days - avg_days) / benchmark_days) * 100))
+    kpi_scores['Time_to_Close'] = {
+        'raw_value': avg_days,
+        'annualized_value': avg_days,  # Time doesn't need annualization
+        'achievement_score': time_achievement,
+        'kpi_score': (time_achievement / 100) * 6,
         'weight': 6,
-        'description': 'Rate of opportunity conversion'
+        'description': 'Average time taken to close loans',
+        'benchmark': benchmark_days
     }
     
-    # 8. Pipeline Management (Weight: 6)
-    pipeline_score = data['HASOPENACTIVITY'].mean() * 100 - data['HASOVERDUETASK'].mean() * 50
-    target_pipeline = 80  # Example target
-    
-    pipeline_achievement = min(100, max(0, (pipeline_score / target_pipeline) * 100))
-    kpi_scores['Pipeline_Management'] = {
-        'raw_value': pipeline_score,
-        'achievement_score': pipeline_achievement,
-        'kpi_score': (pipeline_achievement / 100) * 6,
-        'weight': 6,
-        'description': 'Effectiveness of pipeline management'
-    }
-    
-    # Calculate totals
+    # Calculate totals with adjusted benchmarks
     total_weight = sum(kpi['weight'] for kpi in kpi_scores.values())
     total_score = sum(kpi['kpi_score'] for kpi in kpi_scores.values())
     overall_achievement = (total_score / total_weight * 100) if total_weight > 0 else 0
@@ -151,7 +131,17 @@ def calculate_detailed_kpi_scores(data):
             'total_score': total_score,
             'total_possible': total_weight,
             'overall_achievement': overall_achievement,
-            'number_of_kpis_measured': len(kpi_scores)
+            'number_of_kpis_measured': len(kpi_scores),
+            'time_period': f"{time_factor:.1f} years",
+            'data_summary': {
+                'total_loans': closed_loans,
+                'won_loans': won_loans,
+                'total_revenue': total_revenue,
+                'annualized_revenue': annualized_revenue,
+                'annualized_loans': annualized_loans,
+                'average_loan_size': avg_loan,
+                'time_span_years': time_factor
+            }
         }
     }
 
@@ -466,69 +456,80 @@ def main():
     st.sidebar.header("OpenAI Configuration")
     api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
     
+    # Add date filter in sidebar
+    st.sidebar.header("Time Period Selection")
+    all_time = st.sidebar.checkbox("All Time", value=True)
+    
+    start_date = None
+    end_date = None
+    if not all_time:
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date")
+        with col2:
+            end_date = st.date_input("End Date")
+    
     # File upload
     st.sidebar.header("Data Upload")
     uploaded_file = st.file_uploader("Upload your opportunities CSV file", type="csv")
     
     if uploaded_file is not None:
         data = pd.read_csv(uploaded_file)
-        scores = calculate_detailed_kpi_scores(data)
         
-        # Create tabs
+        # Calculate KPI scores with date filter if specified
+        scores = calculate_detailed_kpi_scores(data, start_date, end_date)
+        
+        # Display time period info
+        st.info(f"Showing metrics for {scores['summary']['time_period']}")
+        
+        # Rest of your visualization code...
         tab1, tab2, tab3 = st.tabs(["KPI Scores", "Visualizations", "AI Insights"])
         
         with tab1:
             st.header("Individual KPI Scores")
-        
+            
+            # Add metrics period summary
+            st.subheader("Performance Period")
+            metric_cols = st.columns(3)
+            with metric_cols[0]:
+                if start_date and end_date:
+                    st.metric("Date Range", f"{start_date} to {end_date}")
+                else:
+                    st.metric("Date Range", "All Time")
+            with metric_cols[1]:
+                st.metric("Time Period", f"{scores['summary']['time_period']}")
+            with metric_cols[2]:
+                st.metric("Annual Factor", f"{1/float(scores['summary']['time_period'].split()[0]):.2f}x")
+            
+            # Display KPI scores with annualized values
             for kpi, values in scores['detailed_scores'].items():
                 with st.expander(f"{kpi} - Score: {values['kpi_score']:.2f}/{values['weight']}"):
-                    col1, col2 = st.columns(2)
+                    col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("Achievement", f"{values['achievement_score']:.1f}%")
                         st.metric("Raw Value", f"{values['raw_value']:.2f}")
                     with col2:
-                        st.write("Description:", values['description'])
+                        st.metric("Annualized Value", f"{values['annualized_value']:.2f}")
+                    with col3:
+                        st.metric("Achievement", f"{values['achievement_score']:.1f}%")
                     
-                    # Calculate normalized progress value
-                        progress_value = min(1.0, max(0.0, values['achievement_score'] / 100))
+                    st.write("Description:", values['description'])
+                    st.write(f"Annual Benchmark: {values['benchmark']:,.2f}")
                     
-                    # Add color-coded progress bars
-                        if progress_value < 0.4:
-                            st.markdown(
-                                f"""<div style="width:100%; background-color:#ff0000; height:20px; 
-                                border-radius:10px; overflow:hidden;">
-                                <div style="width:{progress_value*100}%; background-color:#ff4444; 
-                                height:100%;"></div></div>""", 
-                                unsafe_allow_html=True
-                            )
-                        elif progress_value < 0.7:
-                            st.markdown(
-                                f"""<div style="width:100%; background-color:#ffa500; height:20px; 
-                                border-radius:10px; overflow:hidden;">
-                                <div style="width:{progress_value*100}%; background-color:#ffcc00; 
-                                height:100%;"></div></div>""", 
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            st.markdown(
-                                f"""<div style="width:100%; background-color:#00ff00; height:20px; 
-                                border-radius:10px; overflow:hidden;">
-                                <div style="width:{progress_value*100}%; background-color:#44ff44; 
-                                height:100%;"></div></div>""", 
-                                unsafe_allow_html=True
-                            )
-                
-                # Display achievement level
-                achievement_level = "Needs Improvement" if progress_value < 0.4 else \
-                                  "Good" if progress_value < 0.7 else "Excellent"
-                st.write(f"Performance Level: **{achievement_level}**")
-                
-                if api_key:
-                    if st.button(f"Get AI Insights for {kpi}"):
-                        with st.spinner("Generating insights..."):
-                            insight = get_kpi_specific_insight(kpi, values, api_key)
-                            st.markdown("### AI Insights")
-                            st.markdown(insight)
+                    # Progress bar calculation and display (your existing code)
+                    progress_value = min(1.0, max(0.0, values['achievement_score'] / 100))
+                    
+                    if progress_value < 0.4:
+                        st.markdown(f"""<div style="width:100%; background-color:#ff0000; height:20px; 
+                            border-radius:10px; overflow:hidden;"><div style="width:{progress_value*100}%; 
+                            background-color:#ff4444; height:100%;"></div></div>""", unsafe_allow_html=True)
+                    elif progress_value < 0.7:
+                        st.markdown(f"""<div style="width:100%; background-color:#ffa500; height:20px; 
+                            border-radius:10px; overflow:hidden;"><div style="width:{progress_value*100}%; 
+                            background-color:#ffcc00; height:100%;"></div></div>""", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""<div style="width:100%; background-color:#00ff00; height:20px; 
+                            border-radius:10px; overflow:hidden;"><div style="width:{progress_value*100}%; 
+                            background-color:#44ff44; height:100%;"></div></div>""", unsafe_allow_html=True)
 
         
         with tab2:

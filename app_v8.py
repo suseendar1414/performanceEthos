@@ -11,79 +11,87 @@ import time
 
 def calculate_detailed_kpi_scores(data):
     """
-    Calculate individual scores for each KPI metric with fixed scoring logic
+    Calculate individual scores for each KPI metric based on US benchmarks
     """
     kpi_scores = {}
     
     # 1. Total Number of Loans Closed (Weight: 9)
     closed_loans = data['ISCLOSED'].sum()
-    # Set benchmark targets
-    target_loans = 1000  # Example target
-    max_loans = 2000     # Example maximum
-    
-    # Calculate achievement score using a logarithmic scale
-    achievement_score = min(100, (closed_loans / target_loans) * 100)
+    # Benchmark: 50 loans annually
+    benchmark_loans = 50
+    achievement_score = min(100, (closed_loans / benchmark_loans) * 100)
     kpi_scores['Total_Loans_Closed'] = {
         'raw_value': closed_loans,
         'achievement_score': achievement_score,
         'kpi_score': (achievement_score / 100) * 9,
         'weight': 9,
-        'description': 'Total number of loans that have been closed'
+        'description': 'Total number of loans that have been closed',
+        'benchmark': benchmark_loans
     }
     
     # 2. Total Dollar Value (Weight: 10)
     total_value = data['LOANTOTALREVENUE__C'].sum()
-    # Set revenue targets
-    target_revenue = 10000000  # Example target
-    max_revenue = 20000000     # Example maximum
-    
-    revenue_achievement = min(100, (total_value / target_revenue) * 100)
+    # Benchmark: $17,000,000
+    benchmark_revenue = 17000000
+    revenue_achievement = min(100, (total_value / benchmark_revenue) * 100)
     kpi_scores['Total_Dollar_Value'] = {
         'raw_value': total_value,
         'achievement_score': revenue_achievement,
         'kpi_score': (revenue_achievement / 100) * 10,
         'weight': 10,
-        'description': 'Total monetary value of all loans'
+        'description': 'Total monetary value of all loans',
+        'benchmark': benchmark_revenue
     }
     
     # 3. Loan Types (Weight: 6)
     if 'RECORDTYPEID' in data.columns:
-        loan_types = data['RECORDTYPEID'].nunique()
-        target_types = 5  # Example target
+        loan_types = data['RECORDTYPEID'].value_counts(normalize=True) * 100
+        # Benchmark: Conventional 53.2%, ARM 23.7%, FHA/VA 19.8%
+        benchmark_types = {
+            'Conventional': 53.2,
+            'ARM': 23.7,
+            'FHA_VA': 19.8
+        }
+        # Calculate diversity score based on distribution alignment
+        type_achievement = min(100, 
+            sum(min(loan_types.get(type_name, 0), benchmark_pct) 
+                for type_name, benchmark_pct in benchmark_types.items()))
         
-        type_achievement = min(100, (loan_types / target_types) * 100)
         kpi_scores['Loan_Types'] = {
-            'raw_value': loan_types,
+            'raw_value': len(loan_types),
             'achievement_score': type_achievement,
             'kpi_score': (type_achievement / 100) * 6,
             'weight': 6,
-            'description': 'Diversity of loan types handled'
+            'description': 'Diversity of loan types handled',
+            'benchmark': benchmark_types
         }
     
     # 4. Average Loan Size (Weight: 8)
     avg_loan = data['LOANTOTALREVENUE__C'].mean()
-    target_avg = 100000  # Example target
-    
-    size_achievement = min(100, (avg_loan / target_avg) * 100)
+    # Benchmark: $330,000
+    benchmark_avg = 330000
+    size_achievement = min(100, (avg_loan / benchmark_avg) * 100)
     kpi_scores['Average_Loan_Size'] = {
         'raw_value': avg_loan,
         'achievement_score': size_achievement,
         'kpi_score': (size_achievement / 100) * 8,
         'weight': 8,
-        'description': 'Average size of loans processed'
+        'description': 'Average size of loans processed',
+        'benchmark': benchmark_avg
     }
     
     # 5. Loan Approval Rate (Weight: 7)
-    approval_rate = data['ISWON'].mean() * 100  # Convert to percentage
-    target_approval = 80  # Example target percentage
-    
-    rate_achievement = min(100, (approval_rate / target_approval) * 100)
+    approval_rate = data['ISWON'].mean() * 100
+    # Benchmark: 85%
+    benchmark_approval = 85
+    rate_achievement = min(100, (approval_rate / benchmark_approval) * 100)
     kpi_scores['Loan_Approval_Rate'] = {
         'raw_value': approval_rate,
         'achievement_score': rate_achievement,
         'kpi_score': (rate_achievement / 100) * 7,
         'weight': 7,
-        'description': 'Percentage of loans approved'
+        'description': 'Percentage of loans approved',
+        'benchmark': benchmark_approval
     }
     
     # 6. Time to Close (Weight: 6)
@@ -95,11 +103,10 @@ def calculate_detailed_kpi_scores(data):
             closed_loans = data[data['ISCLOSED'] == True]
             if len(closed_loans) > 0:
                 avg_days = (closed_loans['CLOSEDATE'] - closed_loans['CREATEDDATE']).dt.days.mean()
-                target_days = 30  # Example target
-                max_days = 90     # Example maximum
-                
+                # Benchmark: 60 days
+                benchmark_days = 60
                 # Inverse calculation as lower days is better
-                time_achievement = max(0, min(100, ((max_days - avg_days) / (max_days - target_days)) * 100))
+                time_achievement = max(0, min(100, ((benchmark_days - avg_days) / benchmark_days) * 100))
             else:
                 avg_days = 0
                 time_achievement = 0
@@ -109,35 +116,38 @@ def calculate_detailed_kpi_scores(data):
                 'achievement_score': time_achievement,
                 'kpi_score': (time_achievement / 100) * 6,
                 'weight': 6,
-                'description': 'Average time taken to close loans'
+                'description': 'Average time taken to close loans',
+                'benchmark': benchmark_days
             }
         except Exception as e:
             st.warning(f"Error calculating Time to Close: {str(e)}")
     
     # 7. Conversion Rate (Weight: 6)
-    conversion_rate = (data['ISCLOSED'] & data['ISWON']).mean() * 100  # Convert to percentage
-    target_conversion = 70  # Example target percentage
-    
-    conv_achievement = min(100, (conversion_rate / target_conversion) * 100)
+    conversion_rate = (data['ISCLOSED'] & data['ISWON']).mean() * 100
+    # Benchmark: 7%
+    benchmark_conversion = 7
+    conv_achievement = min(100, (conversion_rate / benchmark_conversion) * 100)
     kpi_scores['Conversion_Rate'] = {
         'raw_value': conversion_rate,
         'achievement_score': conv_achievement,
         'kpi_score': (conv_achievement / 100) * 6,
         'weight': 6,
-        'description': 'Rate of opportunity conversion'
+        'description': 'Rate of opportunity conversion',
+        'benchmark': benchmark_conversion
     }
     
     # 8. Pipeline Management (Weight: 6)
+    # Calculate based on open activities and overdue tasks
     pipeline_score = data['HASOPENACTIVITY'].mean() * 100 - data['HASOVERDUETASK'].mean() * 50
-    target_pipeline = 80  # Example target
-    
+    target_pipeline = 80
     pipeline_achievement = min(100, max(0, (pipeline_score / target_pipeline) * 100))
     kpi_scores['Pipeline_Management'] = {
         'raw_value': pipeline_score,
         'achievement_score': pipeline_achievement,
         'kpi_score': (pipeline_achievement / 100) * 6,
         'weight': 6,
-        'description': 'Effectiveness of pipeline management'
+        'description': 'Effectiveness of pipeline management',
+        'benchmark': target_pipeline
     }
     
     # Calculate totals
@@ -475,7 +485,7 @@ def main():
         scores = calculate_detailed_kpi_scores(data)
         
         # Create tabs
-        tab1, tab2, tab3 = st.tabs(["KPI Scores", "Visualizations", "AI Insights"])
+        tab1, tab2, tab3, tab4 = st.tabs(["KPI Scores", "Visualizations", "AI Insights", "Detailed Analysis"])
         
         with tab1:
             st.header("Individual KPI Scores")
